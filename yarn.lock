@@ -5637,6 +5637,11 @@ react-native-document-scanner-plugin@^2.0.4:
   resolved "https://registry.yarnpkg.com/react-native-document-scanner-plugin/-/react-native-document-scanner-plugin-2.0.4.tgz#a2d0f4c481a2b0b51a0070876216bee081ab0ee9"
   integrity sha512-Y+tEP8qqgIseYw2T9NisT7+vaXJCM1QMj6KUqplNBQ3C+XivDwtyzp2vg03kH6Bjhg+ZxHzuEyu96ltBOax0iw==
 
+react-native-fast-opencv@^0.4.7:
+  version "0.4.7"
+  resolved "https://registry.yarnpkg.com/react-native-fast-opencv/-/react-native-fast-opencv-0.4.7.tgz#6ec3d535a9544cf4395f4f836035963dff2ac85f"
+  integrity sha512-0CAhHzMJni2nTPtaZundvTE06gXtElU0VRa2oUmypJPzvXOvDYQMi49P9mDtrIUQS4Jnf1OvRuGPQ1q/J8hMyQ==
+
 react-native-fs@^2.20.0:
   version "2.20.0"
   resolved "https://registry.yarnpkg.com/react-native-fs/-/react-native-fs-2.20.0.tgz#05a9362b473bfc0910772c0acbb73a78dbc810f6"
