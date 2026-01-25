@@ -5093,6 +5093,11 @@ mkdirp@^1.0.4:
   resolved "https://registry.yarnpkg.com/mkdirp/-/mkdirp-1.0.4.tgz#3eb5ed62622756d79a5f0e2a221dfebad75c2f7e"
   integrity sha512-vVqVZQyf3WLx2Shd0qJ9xuvqgAyKPLAiqITEtqW0oIUjzo3PePDd6fW9iFz30ef7Ysp/oiWqbhszeGWW2T6Gzw==
 
+mrz@^5.0.1:
+  version "5.0.1"
+  resolved "https://registry.yarnpkg.com/mrz/-/mrz-5.0.1.tgz#56cf392de76d273d1a2e23dd69b2593450e1b6e0"
+  integrity sha512-1AAy7muR4578uRPsL86t2sAuB74pjMF5qi8G50lTBQ3qfB0svO842yg6pgeougkHOXN9cAVAza4RU5n1awWXjg==
+
 ms@2.0.0:
   version "2.0.0"
   resolved "https://registry.yarnpkg.com/ms/-/ms-2.0.0.tgz#5608aeadfc00be6c2901df5f9861788de0d597c8"

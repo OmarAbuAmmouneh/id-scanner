@@ -1,6 +1,7 @@
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
+import { parse as parseMRZ } from 'mrz';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -108,22 +109,61 @@ function calculateCropRegion(
 }
 
 // ============================================================================
+// MRZ DETECTION UTILITY
+// ============================================================================
+
+// Regex to detect MRZ patterns (2-3 lines of uppercase + digits + < characters)
+const MRZ_LINE_PATTERN = /^[A-Z0-9<]{30,44}$/;
+
+function detectMRZLines(text: string): string[] | null {
+  const lines = text
+    .split('\n')
+    .map(line => line.trim().toUpperCase().replace(/\s/g, ''))
+    .filter(line => MRZ_LINE_PATTERN.test(line));
+
+  // MRZ has 2 lines (passport/TD2) or 3 lines (TD1 ID cards)
+  if (lines.length >= 2) {
+    return lines.slice(0, lines.length >= 3 ? 3 : 2);
+  }
+  return null;
+}
+
+// ============================================================================
 // OCR UTILITY
 // ============================================================================
 
 async function extractTextFromImage(imagePath: string): Promise<void> {
   try {
     const result = await TextRecognition.recognize(imagePath);
+    const ocrText = result.text;
 
     console.log('=== OCR Results ===');
-    console.log(JSON.stringify(result), 'result')
-    // console.log('Full text:', result.text);
-    // console.log('-------------------');
+    console.log('Raw text:', ocrText);
 
-    // // Log each text block with its bounding box
-    // result.blocks.forEach((block, index) => {
-    //   console.log(`Block ${index + 1}:`, block.text);
-    // });
+    // Check for MRZ and parse if found
+    const mrzLines = detectMRZLines(ocrText);
+    if (mrzLines) {
+      try {
+        const mrzString = mrzLines.join('\n');
+        const parsed = parseMRZ(mrzString);
+        const fields = parsed.fields as Record<string, string | null>;
+        console.log('=== MRZ Detected ===');
+        console.log('Document Type:', fields.documentType);
+        console.log('Country:', fields.issuingState);
+        console.log('Last Name:', fields.lastName);
+        console.log('First Name:', fields.firstName);
+        console.log('Document Number:', fields.documentNumber);
+        console.log('Nationality:', fields.nationality);
+        console.log('Date of Birth:', fields.birthDate);
+        console.log('Sex:', fields.sex);
+        console.log('Expiration Date:', fields.expirationDate);
+        console.log('Valid:', parsed.valid);
+      } catch (mrzError) {
+        console.log('MRZ pattern found but parsing failed:', mrzError);
+      }
+    } else {
+      console.log('No MRZ detected in image');
+    }
   } catch (error) {
     console.error('OCR Error:', error);
   }
