@@ -1,3 +1,4 @@
+import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -107,6 +108,28 @@ function calculateCropRegion(
 }
 
 // ============================================================================
+// OCR UTILITY
+// ============================================================================
+
+async function extractTextFromImage(imagePath: string): Promise<void> {
+  try {
+    const result = await TextRecognition.recognize(imagePath);
+
+    console.log('=== OCR Results ===');
+    console.log(JSON.stringify(result), 'result')
+    // console.log('Full text:', result.text);
+    // console.log('-------------------');
+
+    // // Log each text block with its bounding box
+    // result.blocks.forEach((block, index) => {
+    //   console.log(`Block ${index + 1}:`, block.text);
+    // });
+  } catch (error) {
+    console.error('OCR Error:', error);
+  }
+}
+
+// ============================================================================
 // MAIN COMPONENT
 // ============================================================================
 
@@ -207,6 +230,9 @@ export default function IDScanner({
         
         // Read the image as base64
         const base64 = await RNFS.readFile(scannedImagePath, 'base64');
+
+        // Run OCR on the scanned image
+        await extractTextFromImage(scannedImagePath);
         
         setBase64Data(base64);
 
@@ -288,6 +314,9 @@ export default function IDScanner({
       );
 
       if (croppedResult.base64) {
+        // Run OCR on the cropped image
+        await extractTextFromImage(croppedResult.uri);
+
         setBase64Data(croppedResult.base64);
 
         // Save to gallery if enabled
