@@ -14,7 +14,17 @@ export default function GeminiCropCamera() {
     const [permission, requestPermission] = useCameraPermissions();
     const [croppedImage, setCroppedImage] = useState<string | null>(null);
     const [cameraLayout, setCameraLayout] = useState({ width: 0, height: 0 });
+    const [pictureSizes, setPictureSizes] = useState<string[]>([]);
     const cameraRef = useRef<CameraView>(null);
+
+    // Get available picture sizes when camera is ready
+    const onCameraReady = async () => {
+        if (cameraRef.current) {
+            const sizes = await cameraRef.current.getAvailablePictureSizesAsync();
+            console.log('Available picture sizes:', sizes);
+            setPictureSizes(sizes);
+        }
+    };
 
     if (!permission?.granted) {
         return (
@@ -36,10 +46,12 @@ export default function GeminiCropCamera() {
 
         const photo = await cameraRef.current.takePictureAsync({
             quality: 1,
-            skipProcessing: true,
         });
 
         if (!photo) return;
+
+        console.log('Photo dimensions:', photo.width, 'x', photo.height);
+        console.log('Camera layout:', cameraLayout.width, 'x', cameraLayout.height);
 
         // Calculate how the camera preview maps to the photo
         // The camera preview fills the view, but photo might have different aspect ratio
@@ -66,19 +78,22 @@ export default function GeminiCropCamera() {
         const cropWidth = Math.min(FRAME_SIZE * scaleX, photo.width - cropX);
         const cropHeight = Math.min(FRAME_SIZE * scaleY, photo.height - cropY);
 
+        console.log('Crop dimensions:', cropWidth, 'x', cropHeight);
+
         const cropped = await manipulateAsync(
             photo.uri,
             [{
                 crop: {
-                    originX: cropX,
-                    originY: cropY,
-                    width: cropWidth,
-                    height: cropHeight,
+                    originX: Math.round(cropX),
+                    originY: Math.round(cropY),
+                    width: Math.round(cropWidth),
+                    height: Math.round(cropHeight),
                 }
             }],
             { compress: 1, format: SaveFormat.PNG }
         );
 
+        console.log('Cropped image URI:', cropped.uri);
         setCroppedImage(cropped.uri);
     };
 
@@ -111,6 +126,9 @@ export default function GeminiCropCamera() {
                 style={styles.camera}
                 ref={cameraRef}
                 onLayout={onCameraLayout}
+                onCameraReady={onCameraReady}
+                pictureSize="Photo"
+                autofocus="on"
             >
                 {/* Overlay with cutout */}
                 <View style={styles.overlay} pointerEvents="none">
