@@ -8,7 +8,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
-  View
+  View,
 } from 'react-native';
 import type { Mat, MatVector } from 'react-native-fast-opencv';
 import {
@@ -22,10 +22,12 @@ import {
 import RNFS from 'react-native-fs';
 import {
   Camera,
-  PhotoFile,
   useCameraDevice,
   useCameraPermission,
+  useFrameProcessor,
 } from 'react-native-vision-camera';
+import { useRunOnJS } from 'react-native-worklets-core';
+import { useResizePlugin } from 'vision-camera-resize-plugin';
 
 // ============================================================================
 // CONSTANTS
@@ -33,9 +35,12 @@ import {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-// ID card aspect ratio
+// ID card aspect ratio (standard credit card size)
 const FRAME_ASPECT_RATIO = 1.586;
 const FRAME_WIDTH_PERCENT = 0.85;
+
+// Minimum contour area to be considered a document (relative to frame size)
+const MIN_AREA_THRESHOLD = 3000;
 
 // ============================================================================
 // TYPES
@@ -46,135 +51,30 @@ interface CaptureResult {
   base64: string;
 }
 
-interface IDScannerOpenCVProps {
+interface IDScannerRealtimeProps {
   onCapture?: (result: CaptureResult) => void;
   saveToGallery?: boolean;
-}
-
-// ============================================================================
-// OPENCV DOCUMENT DETECTION
-// ============================================================================
-
-async function detectDocumentEdges(imagePath: string): Promise<{
-  hasDocument: boolean;
-  corners?: { x: number; y: number }[];
-  processedImagePath?: string;
-}> {
-  try {
-    // Read the image file as base64
-    const base64Data = await RNFS.readFile(imagePath.replace('file://', ''), 'base64');
-    
-    // Load the image from base64
-    const source: Mat = OpenCV.base64ToMat(base64Data);
-    
-    // Get source dimensions for creating output Mats
-    const sourceInfo = OpenCV.toJSValue(source);
-    const { rows, cols } = sourceInfo;
-    
-    // Create output Mat for grayscale (single channel)
-    const gray: Mat = OpenCV.createObject(ObjectType.Mat, rows, cols, DataTypes.CV_8U);
-    
-    // Convert to grayscale
-    OpenCV.invoke('cvtColor', source, gray, ColorConversionCodes.COLOR_BGR2GRAY);
-    
-    // Create output Mat for blurred image
-    const blurred: Mat = OpenCV.createObject(ObjectType.Mat, rows, cols, DataTypes.CV_8U);
-    
-    // Create Size object for kernel
-    const ksize = OpenCV.createObject(ObjectType.Size, 5, 5);
-    
-    // Apply Gaussian blur to reduce noise
-    OpenCV.invoke('GaussianBlur', gray, blurred, ksize, 0);
-    
-    // Create output Mat for edges
-    const edges: Mat = OpenCV.createObject(ObjectType.Mat, rows, cols, DataTypes.CV_8U);
-    
-    // Apply Canny edge detection
-    OpenCV.invoke('Canny', blurred, edges, 75, 200);
-    
-    // Create MatVector for contours
-    const contours: MatVector = OpenCV.createObject(ObjectType.MatVector);
-    
-    // Find contours
-    OpenCV.invoke('findContours', edges, contours, RetrievalModes.RETR_LIST, ContourApproximationModes.CHAIN_APPROX_SIMPLE);
-    
-    // Get contours info to iterate
-    const contoursInfo = OpenCV.toJSValue(contours);
-    
-    // Sort contours by area (largest first)
-    let largestContourIndex = -1;
-    let maxArea = 0;
-    
-    for (let i = 0; i < contoursInfo.array.length; i++) {
-      const contour = OpenCV.copyObjectFromVector(contours, i);
-      const areaResult = OpenCV.invoke('contourArea', contour);
-      const area = areaResult.value;
-      if (area > maxArea) {
-        maxArea = area;
-        largestContourIndex = i;
-      }
-    }
-    
-    if (largestContourIndex >= 0) {
-      const largestContour = OpenCV.copyObjectFromVector(contours, largestContourIndex);
-      
-      // Calculate perimeter
-      const perimeterResult = OpenCV.invoke('arcLength', largestContour, true);
-      const perimeter = perimeterResult.value;
-      
-      // Create output for approximated polygon
-      const approxCurve: Mat = OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_32S);
-      
-      // Approximate the contour to a polygon
-      OpenCV.invoke('approxPolyDP', largestContour, approxCurve, 0.02 * perimeter, true);
-      
-      // Get the approximated curve info
-      const approxInfo = OpenCV.toJSValue(approxCurve);
-      
-      // Check if it's a quadrilateral (4 corners)
-      if (approxInfo.rows === 4) {
-        console.log('=== OpenCV Document Detection ===');
-        console.log('Document detected with 4 corners');
-        
-        // Clean up
-        OpenCV.clearBuffers();
-        
-        return {
-          hasDocument: true,
-          corners: [], // Would need additional processing to extract actual point coordinates
-        };
-      }
-    }
-    
-    // Clean up
-    OpenCV.clearBuffers();
-    
-    console.log('No document detected');
-    return { hasDocument: false };
-  } catch (error) {
-    console.error('OpenCV detection error:', error);
-    return { hasDocument: false };
-  }
 }
 
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
 
-export default function IDScannerOpenCV({
+export default function IDScannerRealtime({
   onCapture,
   saveToGallery = true,
-}: IDScannerOpenCVProps) {
+}: IDScannerRealtimeProps) {
   const cameraRef = useRef<Camera>(null);
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
+  const { resize } = useResizePlugin();
 
   const [isCapturing, setIsCapturing] = useState(false);
   const [base64Data, setBase64Data] = useState<string | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
-  const [detectionStatus, setDetectionStatus] = useState<string>('Ready to scan');
+  const [documentDetected, setDocumentDetected] = useState(false);
 
-  // Frame layout
+  // Frame layout for UI overlay
   const frameWidth = SCREEN_WIDTH * FRAME_WIDTH_PERCENT;
   const frameHeight = frameWidth / FRAME_ASPECT_RATIO;
   const frameX = (SCREEN_WIDTH - frameWidth) / 2;
@@ -186,56 +86,172 @@ export default function IDScannerOpenCV({
     }
   }, [hasPermission, requestPermission]);
 
-  // Save to gallery
-  const saveImageToGallery = useCallback(async (base64: string): Promise<string | null> => {
-    const { status } = await MediaLibrary.requestPermissionsAsync(true);
-    if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Please grant access to save photos.');
-      return null;
-    }
-
-    const filename = `IDScan_OpenCV_${Date.now()}.png`;
-
-    try {
-      const tempPath = `${RNFS.DocumentDirectoryPath}/${filename}`;
-      await RNFS.writeFile(tempPath, base64, 'base64');
-      const asset = await MediaLibrary.createAssetAsync(`file://${tempPath}`);
-      await RNFS.unlink(tempPath).catch(() => {});
-      return asset.uri;
-    } catch (e) {
-      console.error('Gallery save error:', e);
-      return null;
-    }
+  // Callback to update detection status from worklet
+  const updateDetectionStatus = useCallback((detected: boolean) => {
+    setDocumentDetected(detected);
   }, []);
 
-  // Capture and process with OpenCV
-  const captureAndProcess = useCallback(async () => {
+  // Create a worklet-callable version of the callback
+  const runUpdateDetection = useRunOnJS(updateDetectionStatus, [updateDetectionStatus]);
+
+  // ============================================================================
+  // FRAME PROCESSOR - Real-time OpenCV detection
+  // ============================================================================
+
+  const frameProcessor = useFrameProcessor(
+    (frame) => {
+      'worklet';
+
+      // Scale down for performance (1/4 size)
+      const scaleFactor = 4;
+      const height = Math.floor(frame.height / scaleFactor);
+      const width = Math.floor(frame.width / scaleFactor);
+
+      // Resize the frame for faster processing
+      const resized = resize(frame, {
+        scale: {
+          width: width,
+          height: height,
+        },
+        pixelFormat: 'bgr',
+        dataType: 'uint8',
+      });
+
+      // Convert frame buffer to OpenCV Mat
+      const src: Mat = OpenCV.frameBufferToMat(height, width, 3, resized);
+
+      // Create output Mats
+      const gray: Mat = OpenCV.createObject(
+        ObjectType.Mat,
+        height,
+        width,
+        DataTypes.CV_8U
+      );
+      const blurred: Mat = OpenCV.createObject(
+        ObjectType.Mat,
+        height,
+        width,
+        DataTypes.CV_8U
+      );
+      const edges: Mat = OpenCV.createObject(
+        ObjectType.Mat,
+        height,
+        width,
+        DataTypes.CV_8U
+      );
+
+      // Convert to grayscale
+      OpenCV.invoke('cvtColor', src, gray, ColorConversionCodes.COLOR_BGR2GRAY);
+
+      // Apply Gaussian blur to reduce noise
+      const ksize = OpenCV.createObject(ObjectType.Size, 5, 5);
+      OpenCV.invoke('GaussianBlur', gray, blurred, ksize, 0);
+
+      // Apply Canny edge detection
+      OpenCV.invoke('Canny', blurred, edges, 50, 150);
+
+      // Find contours
+      const contours: MatVector = OpenCV.createObject(ObjectType.MatVector);
+      OpenCV.invoke(
+        'findContours',
+        edges,
+        contours,
+        RetrievalModes.RETR_EXTERNAL,
+        ContourApproximationModes.CHAIN_APPROX_SIMPLE
+      );
+
+      // Get contours info
+      const contoursInfo = OpenCV.toJSValue(contours);
+      let foundQuadrilateral = false;
+
+      // Find quadrilateral contours (potential documents)
+      for (let i = 0; i < contoursInfo.array.length; i++) {
+        const contour = OpenCV.copyObjectFromVector(contours, i);
+        const { value: area } = OpenCV.invoke('contourArea', contour, false);
+
+        // Filter by minimum area
+        if (area > MIN_AREA_THRESHOLD) {
+          // Get perimeter for polygon approximation
+          const { value: perimeter } = OpenCV.invoke('arcLength', contour, true);
+
+          // Approximate contour to polygon
+          const approxCurve: Mat = OpenCV.createObject(
+            ObjectType.Mat,
+            0,
+            0,
+            DataTypes.CV_32S
+          );
+          OpenCV.invoke(
+            'approxPolyDP',
+            contour,
+            approxCurve,
+            0.02 * perimeter,
+            true
+          );
+
+          // Get approximation info
+          const approxInfo = OpenCV.toJSValue(approxCurve);
+
+          // Check if it's a quadrilateral (4 vertices)
+          if (approxInfo.rows === 4) {
+            foundQuadrilateral = true;
+            break;
+          }
+        }
+      }
+
+      // Update detection status on JS thread
+      runUpdateDetection(foundQuadrilateral);
+
+      // Clean up OpenCV buffers (CRITICAL for memory management)
+      OpenCV.clearBuffers();
+    },
+    [resize, runUpdateDetection]
+  );
+
+  // ============================================================================
+  // CAPTURE FUNCTION
+  // ============================================================================
+
+  const saveImageToGallery = useCallback(
+    async (base64: string): Promise<string | null> => {
+      const { status } = await MediaLibrary.requestPermissionsAsync(true);
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please grant access to save photos.');
+        return null;
+      }
+
+      const filename = `IDScan_Realtime_${Date.now()}.png`;
+
+      try {
+        const tempPath = `${RNFS.DocumentDirectoryPath}/${filename}`;
+        await RNFS.writeFile(tempPath, base64, 'base64');
+        const asset = await MediaLibrary.createAssetAsync(`file://${tempPath}`);
+        await RNFS.unlink(tempPath).catch(() => {});
+        return asset.uri;
+      } catch (e) {
+        console.error('Gallery save error:', e);
+        return null;
+      }
+    },
+    []
+  );
+
+  const capturePhoto = useCallback(async () => {
     if (!cameraRef.current || isCapturing) return;
 
     setIsCapturing(true);
-    setDetectionStatus('Capturing...');
 
     try {
       // Take photo
-      const photo: PhotoFile = await cameraRef.current.takePhoto({
+      const photo = await cameraRef.current.takePhoto({
         flash: 'off',
         enableShutterSound: true,
       });
 
       const photoPath = `file://${photo.path}`;
-      setDetectionStatus('Detecting document edges...');
 
-      // Detect document with OpenCV
-      const detection = await detectDocumentEdges(photoPath);
-
-      if (detection.hasDocument && detection.corners) {
-        setDetectionStatus('Document detected! Processing...');
-        console.log('Document corners:', detection.corners);
-      } else {
-        setDetectionStatus('No document edges detected, using full image');
-      }
-
-      // Calculate safe crop region that fits within image bounds
+      // Calculate crop region for ID card area
       const cropWidth = Math.min(Math.round(photo.width * 0.9), photo.width);
       const cropHeight = Math.min(
         Math.round(cropWidth / FRAME_ASPECT_RATIO),
@@ -281,18 +297,12 @@ export default function IDScannerOpenCV({
           });
         }
 
-        setDetectionStatus('Capture complete!');
-        Alert.alert(
-          'OpenCV Scan Complete',
-          detection.hasDocument
-            ? 'Document edges detected and captured.'
-            : 'Image captured (no edges detected).',
-          [{ text: 'OK' }]
-        );
+        Alert.alert('Capture Complete', 'ID card image has been captured.', [
+          { text: 'OK' },
+        ]);
       }
     } catch (error) {
       console.error('Capture error:', error);
-      setDetectionStatus('Error capturing');
       Alert.alert('Error', 'Failed to capture. Please try again.');
     } finally {
       setIsCapturing(false);
@@ -333,22 +343,40 @@ export default function IDScannerOpenCV({
 
   return (
     <View style={styles.container}>
-      {/* Camera Preview */}
+      {/* Camera Preview with Frame Processor */}
       <Camera
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         device={device}
         isActive={true}
         photo={true}
+        frameProcessor={frameProcessor}
       />
 
       {/* Frame Overlay */}
-      <View style={[styles.overlay, { top: 0, left: 0, right: 0, height: frameY }]} />
-      <View style={[styles.overlay, { top: frameY + frameHeight, left: 0, right: 0, bottom: 0 }]} />
-      <View style={[styles.overlay, { top: frameY, left: 0, width: frameX, height: frameHeight }]} />
-      <View style={[styles.overlay, { top: frameY, right: 0, width: frameX, height: frameHeight }]} />
+      <View
+        style={[styles.overlay, { top: 0, left: 0, right: 0, height: frameY }]}
+      />
+      <View
+        style={[
+          styles.overlay,
+          { top: frameY + frameHeight, left: 0, right: 0, bottom: 0 },
+        ]}
+      />
+      <View
+        style={[
+          styles.overlay,
+          { top: frameY, left: 0, width: frameX, height: frameHeight },
+        ]}
+      />
+      <View
+        style={[
+          styles.overlay,
+          { top: frameY, right: 0, width: frameX, height: frameHeight },
+        ]}
+      />
 
-      {/* Frame Border */}
+      {/* Frame Border - changes color based on detection */}
       <View
         style={[
           styles.frame,
@@ -357,48 +385,74 @@ export default function IDScannerOpenCV({
             left: frameX,
             width: frameWidth,
             height: frameHeight,
+            borderColor: documentDetected ? '#00FF00' : '#FFFFFF',
           },
         ]}
       >
-        <View style={[styles.corner, styles.cornerTopLeft]} />
-        <View style={[styles.corner, styles.cornerTopRight]} />
-        <View style={[styles.corner, styles.cornerBottomLeft]} />
-        <View style={[styles.corner, styles.cornerBottomRight]} />
+        <View style={[styles.corner, styles.cornerTopLeft, documentDetected && styles.cornerDetected]} />
+        <View style={[styles.corner, styles.cornerTopRight, documentDetected && styles.cornerDetected]} />
+        <View style={[styles.corner, styles.cornerBottomLeft, documentDetected && styles.cornerDetected]} />
+        <View style={[styles.corner, styles.cornerBottomRight, documentDetected && styles.cornerDetected]} />
       </View>
+
+      {/* Detection indicator overlay */}
+      {documentDetected && (
+        <View
+          style={[
+            styles.detectionOverlay,
+            {
+              top: frameY,
+              left: frameX,
+              width: frameWidth,
+              height: frameHeight,
+            },
+          ]}
+        />
+      )}
 
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>OpenCV Scanner</Text>
-        <Text style={styles.subtitle}>(Experimental)</Text>
+        <Text style={styles.title}>Real-time Scanner</Text>
+        <Text style={styles.subtitle}>OpenCV Edge Detection</Text>
       </View>
 
       {/* Status */}
       <View style={styles.statusContainer}>
-        <Text style={styles.detectionStatus}>{detectionStatus}</Text>
+        <Text style={[styles.detectionStatus, documentDetected && styles.detectionStatusActive]}>
+          {documentDetected
+            ? 'Document detected!'
+            : 'Position ID card within frame'}
+        </Text>
       </View>
 
       {/* Capture Button */}
       <View style={styles.captureContainer}>
         <TouchableOpacity
-          style={[styles.captureButton, isCapturing && styles.captureButtonDisabled]}
-          onPress={captureAndProcess}
+          style={[
+            styles.captureButton,
+            isCapturing && styles.captureButtonDisabled,
+            documentDetected && styles.captureButtonActive,
+          ]}
+          onPress={capturePhoto}
           disabled={isCapturing}
           activeOpacity={0.7}
         >
           {isCapturing ? (
             <ActivityIndicator size="small" color="#000000" />
           ) : (
-            <View style={styles.captureButtonInner} />
+            <View style={[styles.captureButtonInner, documentDetected && styles.captureButtonInnerActive]} />
           )}
         </TouchableOpacity>
-        <Text style={styles.captureHint}>Tap to capture with OpenCV</Text>
+        <Text style={styles.captureHint}>
+          {documentDetected ? 'Document ready - Tap to capture' : 'Tap to capture'}
+        </Text>
       </View>
 
       {/* Result Info */}
       {base64Data && (
         <View style={styles.resultInfo}>
           <Text style={styles.resultText}>
-            ✓ Captured ({Math.round(base64Data.length / 1024)}KB)
+            Captured ({Math.round(base64Data.length / 1024)}KB)
           </Text>
           {savedPath && (
             <Text style={styles.resultText} numberOfLines={1}>
@@ -429,15 +483,22 @@ const styles = StyleSheet.create({
   frame: {
     position: 'absolute',
     borderWidth: 2,
-    borderColor: '#00FF00', // Green for OpenCV theme
+    borderRadius: 12,
+  },
+  detectionOverlay: {
+    position: 'absolute',
+    backgroundColor: 'rgba(0, 255, 0, 0.1)',
     borderRadius: 12,
   },
   corner: {
     position: 'absolute',
     width: 24,
     height: 24,
-    borderColor: '#00FF00',
+    borderColor: '#FFFFFF',
     borderWidth: 3,
+  },
+  cornerDetected: {
+    borderColor: '#00FF00',
   },
   cornerTopLeft: {
     top: -2,
@@ -498,6 +559,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
   },
+  detectionStatusActive: {
+    backgroundColor: 'rgba(0, 128, 0, 0.9)',
+  },
   captureContainer: {
     position: 'absolute',
     bottom: 60,
@@ -507,10 +571,14 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: '#00FF00',
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 4,
+    borderColor: 'rgba(255, 255, 255, 0.5)',
+  },
+  captureButtonActive: {
+    backgroundColor: '#00FF00',
     borderColor: 'rgba(0, 255, 0, 0.5)',
   },
   captureButtonDisabled: {
@@ -520,12 +588,16 @@ const styles = StyleSheet.create({
     width: 60,
     height: 60,
     borderRadius: 30,
-    backgroundColor: '#00FF00',
+    backgroundColor: '#FFFFFF',
     borderWidth: 2,
+    borderColor: '#CCCCCC',
+  },
+  captureButtonInnerActive: {
+    backgroundColor: '#00FF00',
     borderColor: '#00CC00',
   },
   captureHint: {
-    color: '#00FF00',
+    color: '#FFFFFF',
     fontSize: 14,
     marginTop: 12,
   },

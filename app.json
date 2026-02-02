@@ -10,10 +10,12 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
+      "deploymentTarget": "16.0",
       "infoPlist": {
         "NSCameraUsageDescription": "$(PRODUCT_NAME) needs access to your camera to scan ID documents.",
         "NSPhotoLibraryAddUsageDescription": "This app saves scanned ID images to your device."
-      }
+      },
+      "bundleIdentifier": "com.omar.idscanner"
     },
     "android": {
       "adaptiveIcon": {

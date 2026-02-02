@@ -7,6 +7,9 @@
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo run:android",
     "ios": "expo run:ios",
+    "ios:device": "expo run:ios --device",
+    "ios:17pro": "expo run:ios --device \"iPhone 17 Pro\"",
+    "ios:16pro": "expo run:ios --device \"iPhone 16 Pro\"",
     "web": "expo start --web",
     "lint": "expo lint"
   },
@@ -16,6 +19,7 @@
     "@react-navigation/bottom-tabs": "^7.4.0",
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",
+    "@shopify/react-native-skia": "^2.4.14",
     "expo": "~54.0.31",
     "expo-blur": "^15.0.8",
     "expo-constants": "~18.0.13",
@@ -39,13 +43,16 @@
     "react-native-fast-opencv": "^0.4.7",
     "react-native-fs": "^2.20.0",
     "react-native-gesture-handler": "~2.28.0",
+    "react-native-photo-manipulator": "^1.9.2",
     "react-native-reanimated": "~4.1.1",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
     "react-native-svg": "^15.15.1",
     "react-native-vision-camera": "^4.7.3",
     "react-native-web": "~0.21.0",
-    "react-native-worklets": "0.5.1"
+    "react-native-worklets": ">=0.5.0",
+    "react-native-worklets-core": "^1.6.2",
+    "vision-camera-resize-plugin": "^3.2.0"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
