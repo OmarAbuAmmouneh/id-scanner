@@ -4,11 +4,14 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const FRAME_SIZE = 250;
+
+// ID card aspect ratio is approximately 1.586:1 (85.6mm x 53.98mm)
+const FRAME_WIDTH = SCREEN_WIDTH - 40; // Leave 20px margin on each side
+const FRAME_HEIGHT = FRAME_WIDTH / 1.586;
 
 // Frame position (centered on screen)
-const FRAME_X = (SCREEN_WIDTH - FRAME_SIZE) / 2;
-const FRAME_Y = (SCREEN_HEIGHT - FRAME_SIZE) / 2;
+const FRAME_X = (SCREEN_WIDTH - FRAME_WIDTH) / 2;
+const FRAME_Y = (SCREEN_HEIGHT - FRAME_HEIGHT) / 2;
 
 export default function GeminiCropCamera() {
     const [permission, requestPermission] = useCameraPermissions();
@@ -75,8 +78,8 @@ export default function GeminiCropCamera() {
 
         const cropX = Math.max(0, FRAME_X * scaleX + offsetX);
         const cropY = Math.max(0, FRAME_Y * scaleY + offsetY);
-        const cropWidth = Math.min(FRAME_SIZE * scaleX, photo.width - cropX);
-        const cropHeight = Math.min(FRAME_SIZE * scaleY, photo.height - cropY);
+        const cropWidth = Math.min(FRAME_WIDTH * scaleX, photo.width - cropX);
+        const cropHeight = Math.min(FRAME_HEIGHT * scaleY, photo.height - cropY);
 
         console.log('Crop dimensions:', cropWidth, 'x', cropHeight);
 
@@ -135,7 +138,7 @@ export default function GeminiCropCamera() {
                     {/* Top */}
                     <View style={{ height: FRAME_Y, backgroundColor: 'rgba(0,0,0,0.6)' }} />
                     {/* Middle row */}
-                    <View style={{ flexDirection: 'row', height: FRAME_SIZE }}>
+                    <View style={{ flexDirection: 'row', height: FRAME_HEIGHT }}>
                         <View style={{ width: FRAME_X, backgroundColor: 'rgba(0,0,0,0.6)' }} />
                         <View style={styles.frame} />
                         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)' }} />
@@ -169,10 +172,11 @@ const styles = StyleSheet.create({
         ...StyleSheet.absoluteFillObject,
     },
     frame: {
-        width: FRAME_SIZE,
-        height: FRAME_SIZE,
+        width: FRAME_WIDTH,
+        height: FRAME_HEIGHT,
         borderWidth: 2,
         borderColor: '#00FF00',
+        borderRadius: 8,
     },
     hintText: { color: 'white', marginTop: 20, fontWeight: 'bold' },
     captureBtn: {
