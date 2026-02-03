@@ -1,4 +1,3 @@
-import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
 import { parse as parseMRZ } from 'mrz';

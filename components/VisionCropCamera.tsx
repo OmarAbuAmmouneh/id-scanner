@@ -1,8 +1,9 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { StyleSheet, View, TouchableOpacity, Text, Image, Dimensions, ActivityIndicator } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
-import TextRecognition from '@react-native-ml-kit/text-recognition';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Dimensions, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Camera, useCameraDevice, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
+import { useTextRecognition } from 'react-native-vision-camera-text-recognition';
+import { useRunOnJS } from 'react-native-worklets-core';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -14,8 +15,56 @@ const FRAME_HEIGHT = FRAME_WIDTH / 1.586;
 const FRAME_X = (SCREEN_WIDTH - FRAME_WIDTH) / 2;
 const FRAME_Y = (SCREEN_HEIGHT - FRAME_HEIGHT) / 2;
 
-// OCR scanning interval
-const OCR_SCAN_INTERVAL = 2000; // ms between OCR scans
+// Padding factor to expand detection bounds (20% on each side)
+const BOUNDS_PADDING = 0.2;
+
+// Helper to get the frame region bounds in frame coordinates
+const getFrameBounds = (frameWidth: number, frameHeight: number) => {
+    'worklet';
+    const screenAspect = SCREEN_WIDTH / SCREEN_HEIGHT;
+    const frameAspect = frameWidth / frameHeight;
+
+    let scaleX: number, scaleY: number;
+    let offsetX = 0, offsetY = 0;
+
+    if (frameAspect > screenAspect) {
+        scaleY = frameHeight / SCREEN_HEIGHT;
+        scaleX = scaleY;
+        offsetX = (frameWidth - SCREEN_WIDTH * scaleX) / 2;
+    } else {
+        scaleX = frameWidth / SCREEN_WIDTH;
+        scaleY = scaleX;
+        offsetY = (frameHeight - SCREEN_HEIGHT * scaleY) / 2;
+    }
+
+    // Calculate base bounds
+    const left = FRAME_X * scaleX + offsetX;
+    const top = FRAME_Y * scaleY + offsetY;
+    const right = (FRAME_X + FRAME_WIDTH) * scaleX + offsetX;
+    const bottom = (FRAME_Y + FRAME_HEIGHT) * scaleY + offsetY;
+
+    // Calculate padding amounts
+    const horizontalPadding = (right - left) * BOUNDS_PADDING;
+    const verticalPadding = (bottom - top) * BOUNDS_PADDING;
+
+    // Return expanded bounds
+    return {
+        left: left - horizontalPadding,
+        top: top - verticalPadding,
+        right: right + horizontalPadding,
+        bottom: bottom + verticalPadding,
+    };
+};
+
+// Check if a point is within the frame bounds
+const isWithinFrame = (
+    x: number,
+    y: number,
+    bounds: { left: number; top: number; right: number; bottom: number }
+) => {
+    'worklet';
+    return x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
+};
 
 export default function VisionCropCamera() {
     const { hasPermission, requestPermission } = useCameraPermission();
@@ -24,16 +73,18 @@ export default function VisionCropCamera() {
 
     const [croppedImage, setCroppedImage] = useState<string | null>(null);
     const [cameraLayout, setCameraLayout] = useState({ width: 0, height: 0 });
+    const [isCameraActive, setIsCameraActive] = useState(true);
 
     // Detection state
     const [textDetected, setTextDetected] = useState(false);
-    const [isScanning, setIsScanning] = useState(false);
     const [statusMessage, setStatusMessage] = useState('Scanning for ID...');
-    const [nationalId, setNationalId] = useState<string | null>(null);
 
     // Refs for tracking
-    const isOcrRunning = useRef(false);
     const isCapturing = useRef(false);
+    const detectionTriggered = useRef(false);
+
+    // Text recognition hook
+    const { scanText } = useTextRecognition({ language: 'latin' });
 
     const onCameraLayout = useCallback((event: any) => {
         const { width, height } = event.nativeEvent.layout;
@@ -48,7 +99,7 @@ export default function VisionCropCamera() {
         return '#FFFFFF'; // White - scanning
     };
 
-    const takeAndCropPhoto = async () => {
+    const takeAndCropPhoto = useCallback(async () => {
         if (!camera.current || isCapturing.current) return;
 
         isCapturing.current = true;
@@ -60,17 +111,11 @@ export default function VisionCropCamera() {
                 enableShutterSound: false,
             });
 
-            console.log('Photo dimensions:', photo.width, 'x', photo.height);
-            console.log('Photo orientation:', photo.orientation);
-            console.log('Camera layout:', cameraLayout.width, 'x', cameraLayout.height);
-
             // Vision Camera reports raw dimensions (landscape) but expo-image-manipulator
             // applies EXIF rotation BEFORE cropping. So we need to use post-EXIF dimensions.
             const needsSwap = photo.orientation === 'landscape-left' || photo.orientation === 'landscape-right';
             const imageWidth = needsSwap ? photo.height : photo.width;
             const imageHeight = needsSwap ? photo.width : photo.height;
-
-            console.log('Effective dimensions (post-EXIF):', imageWidth, 'x', imageHeight);
 
             const previewAspect = cameraLayout.width / cameraLayout.height;
             const photoAspect = imageWidth / imageHeight;
@@ -93,8 +138,6 @@ export default function VisionCropCamera() {
             const cropWidth = Math.min(FRAME_WIDTH * scaleX, imageWidth - cropX);
             const cropHeight = Math.min(FRAME_HEIGHT * scaleY, imageHeight - cropY);
 
-            console.log('Crop region:', { cropX, cropY, cropWidth, cropHeight });
-
             const photoUri = `file://${photo.path}`;
 
             const cropped = await manipulateAsync(
@@ -110,84 +153,79 @@ export default function VisionCropCamera() {
                 { compress: 1, format: SaveFormat.PNG }
             );
 
+            setIsCameraActive(false);
             setCroppedImage(cropped.uri);
         } catch (error) {
-            console.error('Capture error:', error);
+            // Capture failed
         } finally {
             isCapturing.current = false;
             // Reset detection state
             setTextDetected(false);
+            detectionTriggered.current = false;
         }
-    };
+    }, [cameraLayout]);
 
-    // Periodic OCR scanning
-    useEffect(() => {
-        if (croppedImage) return; // Don't scan when showing preview
-        if (!device || !hasPermission) return; // Don't scan without camera device or permission
+    // Callback to handle OCR detection from worklet
+    const onTextDetected = useCallback(() => {
+        if (detectionTriggered.current || isCapturing.current) return;
+        detectionTriggered.current = true;
+        setTextDetected(true);
+        setStatusMessage('ID detected! Capturing...');
+    }, []);
 
-        let isMounted = true;
-        let interval: ReturnType<typeof setInterval> | null = null;
+    const runOnTextDetected = useRunOnJS(onTextDetected, [onTextDetected]);
 
-        const runOcr = async () => {
-            if (!isMounted) return;
-            if (isOcrRunning.current || !camera.current || isCapturing.current) return;
+    // Frame processor for real-time OCR
+    const frameProcessor = useFrameProcessor((frame) => {
+        'worklet';
 
-            isOcrRunning.current = true;
-            setIsScanning(true);
+        const result = scanText(frame) as any;
 
-            try {
-                const photo = await camera.current.takePhoto({
-                    flash: 'off',
-                    enableShutterSound: false,
-                });
+        if (result?.blocks && result.blocks.length > 0) {
+            // Get the frame bounds to filter text blocks
+            const bounds = getFrameBounds(frame.width, frame.height);
 
-                if (!isMounted) return;
+            // Filter blocks to only include those within the frame area
+            const filteredText: string[] = [];
+            for (const block of result.blocks) {
+                // Check if the block's center is within the frame bounds
+                const blockFrame = block.blockFrame;
+                if (blockFrame) {
+                    const centerX = blockFrame.boundingCenterX || (blockFrame.x + blockFrame.width / 2);
+                    const centerY = blockFrame.boundingCenterY || (blockFrame.y + blockFrame.height / 2);
 
-                const result = await TextRecognition.recognize(`file://${photo.path}`);
-                const text = result.text;
+                    if (isWithinFrame(centerX, centerY, bounds)) {
+                        if (block.blockText) {
+                            filteredText.push(block.blockText);
+                        }
+                    }
+                }
+            }
+
+            if (filteredText.length > 0) {
+                const text = filteredText.join(' ');
                 const textLower = text.toLowerCase();
 
-                // Look for 10-digit national ID number and "hashemite" keyword
+                // Check for all required patterns:
+                // 1. 10-digit national ID
+                // 2. "name" keyword
+                // 3. "hashemite" keyword
                 const nationalIdMatch = text.match(/\d{10}/);
+                const hasName = textLower.includes('name');
                 const hasHashemite = textLower.includes('hashemite');
-
-                if (nationalIdMatch && hasHashemite && isMounted) {
-                    console.log('National ID detected:', nationalIdMatch[0]);
-                    setNationalId(nationalIdMatch[0]);
-                    setTextDetected(true);
-                    setStatusMessage('ID detected! Capturing...');
-                }
-            } catch (e) {
-                console.log('OCR error:', e);
-            } finally {
-                isOcrRunning.current = false;
-                if (isMounted) {
-                    setIsScanning(false);
+                if (nationalIdMatch && hasName && hasHashemite) {
+                    runOnTextDetected();
                 }
             }
-        };
-
-        // Wait for camera to initialize before starting OCR
-        const startDelay = setTimeout(() => {
-            if (isMounted) {
-                runOcr();
-                interval = setInterval(runOcr, OCR_SCAN_INTERVAL);
-            }
-        }, 1500); // Give camera 1.5s to initialize
-
-        return () => {
-            isMounted = false;
-            clearTimeout(startDelay);
-            if (interval) clearInterval(interval);
-        };
-    }, [croppedImage, device, hasPermission]);
+        }
+    }, [scanText, runOnTextDetected]);
 
     // Auto-capture when text is detected
     useEffect(() => {
         if (textDetected && !croppedImage && !isCapturing.current) {
             takeAndCropPhoto();
         }
-    }, [textDetected, croppedImage]);
+    }, [textDetected, croppedImage, takeAndCropPhoto]);
 
     // --- PERMISSION SCREEN ---
     if (!hasPermission) {
@@ -224,7 +262,13 @@ export default function VisionCropCamera() {
                         style={styles.retakeBtn}
                         onPress={() => {
                             setCroppedImage(null);
-                            setNationalId(null);
+                            setStatusMessage('Scanning for ID...');
+                            setTextDetected(false);
+                            detectionTriggered.current = false;
+                            // Re-enable camera after a brief delay to let it reinitialize
+                            setTimeout(() => {
+                                setIsCameraActive(true);
+                            }, 100);
                         }}
                     >
                         <Text style={styles.btnText}>Retake Photo</Text>
@@ -243,9 +287,10 @@ export default function VisionCropCamera() {
                 ref={camera}
                 style={StyleSheet.absoluteFill}
                 device={device}
-                isActive={true}
+                isActive={isCameraActive}
                 photo={true}
                 onLayout={onCameraLayout}
+                frameProcessor={isCameraActive ? frameProcessor : undefined}
             />
 
             {/* Overlay with cutout */}
@@ -271,7 +316,7 @@ export default function VisionCropCamera() {
                         styles.statusContainer,
                         textDetected && styles.statusContainerReady,
                     ]}>
-                        {isScanning && !textDetected && (
+                        {!textDetected && (
                             <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
                         )}
                         <Text style={styles.statusText}>{statusMessage}</Text>
