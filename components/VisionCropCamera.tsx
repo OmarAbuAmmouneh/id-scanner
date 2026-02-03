@@ -1,11 +1,12 @@
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Dimensions, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraFormat, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
 import { useTextRecognition } from 'react-native-vision-camera-text-recognition';
 import { useRunOnJS } from 'react-native-worklets-core';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const IS_IOS = Platform.OS === 'ios';
 
 // ID card aspect ratio is approximately 1.586:1 (85.6mm x 53.98mm)
 const FRAME_WIDTH = SCREEN_WIDTH - 40;
@@ -79,6 +80,12 @@ export default function VisionCropCamera() {
     const { hasPermission, requestPermission } = useCameraPermission();
     const device = useCameraDevice('back');
     const camera = useRef<Camera>(null);
+
+    // Use higher resolution format for better OCR detection at distance
+    const format = useCameraFormat(device, [
+        { videoResolution: { width: 1920, height: 1080 } },
+        { photoResolution: { width: 1920, height: 1080 } },
+    ]);
 
     const [croppedImage, setCroppedImage] = useState<string | null>(null);
     const [cameraLayout, setCameraLayout] = useState({ width: 0, height: 0 });
@@ -249,40 +256,46 @@ export default function VisionCropCamera() {
 
         let idDetected = false;
 
-        if (result?.blocks && result.blocks.length > 0) {
-            // Get the frame bounds to filter text blocks
-            const bounds = getFrameBounds(frame.width, frame.height);
+        // Check resultText (Android) or blocks (iOS)
+        let fullText = '';
 
-            // Filter blocks to only include those within the frame area
-            const filteredText: string[] = [];
+        if (result?.resultText) {
+            // Android format
+            fullText = result.resultText;
+        } else if (result?.blocks && result.blocks.length > 0) {
+            // iOS format - collect all block text
             for (const block of result.blocks) {
-                // Check if the block's center is within the frame bounds
-                const blockFrame = block.blockFrame;
-                if (blockFrame) {
-                    const centerX = blockFrame.boundingCenterX || (blockFrame.x + blockFrame.width / 2);
-                    const centerY = blockFrame.boundingCenterY || (blockFrame.y + blockFrame.height / 2);
-
-                    if (isWithinFrame(centerX, centerY, bounds)) {
-                        if (block.blockText) {
-                            filteredText.push(block.blockText);
-                        }
-                    }
+                if (block.blockText) {
+                    fullText += block.blockText + ' ';
                 }
             }
+        }
 
-            if (filteredText.length > 0) {
-                const text = filteredText.join(' ');
-                const textLower = text.toLowerCase();
+        if (fullText.length > 0) {
+            const textLower = fullText.toLowerCase();
 
-                // Check for all required patterns:
-                // 1. 10-digit national ID
-                // 2. "name" keyword
-                // 3. "hashemite" keyword
-                const nationalIdMatch = text.match(/\d{10}/);
-                const hasName = textLower.includes('name');
-                const hasHashemite = textLower.includes('hashemite');
-                
-                if (nationalIdMatch && hasName && hasHashemite) {
+            // Check for patterns:
+            // 1. 10-digit national ID
+            // 2. "name" or common OCR misreads
+            // 3. "hashemite"/"jordan" (iOS only)
+            const nationalIdMatch = fullText.match(/\d{10}/);
+            const hasName = textLower.includes('name') ||
+                           textLower.includes('nae') ||
+                           textLower.includes('nam:') ||
+                           textLower.includes('nane') ||
+                           textLower.includes('namet');
+            if (IS_IOS) {
+                // iOS: require hashemite/jordan check
+                const hasJordanId = textLower.includes('hashemite') ||
+                                   textLower.includes('jordan') ||
+                                   textLower.includes('kingdom');
+                if (nationalIdMatch && hasName && hasJordanId) {
+                    idDetected = true;
+                    runOnDetectionSuccess();
+                }
+            } else {
+                // Android: just name + national ID
+                if (nationalIdMatch && hasName) {
                     idDetected = true;
                     runOnDetectionSuccess();
                 }
@@ -363,6 +376,7 @@ export default function VisionCropCamera() {
                 ref={camera}
                 style={StyleSheet.absoluteFill}
                 device={device}
+                format={format}
                 isActive={isCameraActive}
                 photo={true}
                 onLayout={onCameraLayout}
