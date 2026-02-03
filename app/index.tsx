@@ -1,10 +1,11 @@
 import CameraOverlayCrop from '@/components/CameraOverlayCrop';
 import GeminiCropCamera from "@/components/GeminiCropCamera";
+import VisionCropCamera from "@/components/VisionCropCamera";
 
 export default function MainScreen() {
   const handleCapture = (photoPath: string) => {
     console.log('Captured:', photoPath);
   };
-  return <GeminiCropCamera/>
-  // return <CameraOverlayCrop />;
-}
+  return <VisionCropCamera/>
+  // return <GeminiCropCamera/>
+ }
