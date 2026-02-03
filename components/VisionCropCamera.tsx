@@ -18,6 +18,15 @@ const FRAME_Y = (SCREEN_HEIGHT - FRAME_HEIGHT) / 2;
 // Padding factor to expand detection bounds (20% on each side)
 const BOUNDS_PADDING = 0.2;
 
+// Hold steady duration in milliseconds before capture
+const HOLD_DURATION_MS = 1000;
+
+// Grace period - how long detection can be lost before resetting (prevents flicker)
+const DETECTION_GRACE_MS = 300;
+
+// Detection phases
+type DetectionPhase = 'scanning' | 'holding' | 'ready';
+
 // Helper to get the frame region bounds in frame coordinates
 const getFrameBounds = (frameWidth: number, frameHeight: number) => {
     'worklet';
@@ -76,12 +85,13 @@ export default function VisionCropCamera() {
     const [isCameraActive, setIsCameraActive] = useState(true);
 
     // Detection state
-    const [textDetected, setTextDetected] = useState(false);
+    const [detectionPhase, setDetectionPhase] = useState<DetectionPhase>('scanning');
     const [statusMessage, setStatusMessage] = useState('Scanning for ID...');
 
     // Refs for tracking
     const isCapturing = useRef(false);
-    const detectionTriggered = useRef(false);
+    const holdStartTime = useRef<number | null>(null);
+    const lastDetectionTime = useRef<number | null>(null);
 
     // Text recognition hook
     const { scanText } = useTextRecognition({ language: 'latin' });
@@ -91,12 +101,16 @@ export default function VisionCropCamera() {
         setCameraLayout({ width, height });
     }, []);
 
-    // Get frame color based on detection state
+    // Get frame color based on detection phase
     const getFrameColor = () => {
-        if (textDetected) {
-            return '#00FF00'; // Green - ID detected
+        switch (detectionPhase) {
+            case 'holding':
+                return '#FFA500'; // Orange - hold steady
+            case 'ready':
+                return '#00FF00'; // Green - ready to capture
+            default:
+                return '#FFFFFF'; // White - scanning
         }
-        return '#FFFFFF'; // White - scanning
     };
 
     const takeAndCropPhoto = useCallback(async () => {
@@ -160,26 +174,62 @@ export default function VisionCropCamera() {
         } finally {
             isCapturing.current = false;
             // Reset detection state
-            setTextDetected(false);
-            detectionTriggered.current = false;
+            setDetectionPhase('scanning');
+            holdStartTime.current = null;
+            lastDetectionTime.current = null;
         }
     }, [cameraLayout]);
 
-    // Callback to handle OCR detection from worklet
-    const onTextDetected = useCallback(() => {
-        if (detectionTriggered.current || isCapturing.current) return;
-        detectionTriggered.current = true;
-        setTextDetected(true);
-        setStatusMessage('ID detected! Capturing...');
+    // Callback when ID is detected - start or continue holding
+    const onDetectionSuccess = useCallback(() => {
+        if (isCapturing.current) return;
+        
+        const now = Date.now();
+        lastDetectionTime.current = now;
+        
+        // Start hold timer if not already started
+        if (holdStartTime.current === null) {
+            holdStartTime.current = now;
+            setDetectionPhase('holding');
+            setStatusMessage('Hold steady...');
+        } else {
+            // Check if hold duration has passed
+            const elapsed = now - holdStartTime.current;
+            if (elapsed >= HOLD_DURATION_MS) {
+                setDetectionPhase('ready');
+                setStatusMessage('Capturing...');
+            }
+        }
     }, []);
 
-    const runOnTextDetected = useRunOnJS(onTextDetected, [onTextDetected]);
+    // Callback when detection is lost - reset only after grace period
+    const onDetectionMissed = useCallback(() => {
+        if (isCapturing.current) return;
+        if (holdStartTime.current === null) return; // Already in scanning state
+        
+        const now = Date.now();
+        const lastDetection = lastDetectionTime.current || 0;
+        const timeSinceLastDetection = now - lastDetection;
+        
+        // Only reset if grace period has elapsed
+        if (timeSinceLastDetection >= DETECTION_GRACE_MS) {
+            holdStartTime.current = null;
+            lastDetectionTime.current = null;
+            setDetectionPhase('scanning');
+            setStatusMessage('Scanning for ID...');
+        }
+    }, []);
+
+    const runOnDetectionSuccess = useRunOnJS(onDetectionSuccess, [onDetectionSuccess]);
+    const runOnDetectionMissed = useRunOnJS(onDetectionMissed, [onDetectionMissed]);
 
     // Frame processor for real-time OCR
     const frameProcessor = useFrameProcessor((frame) => {
         'worklet';
 
         const result = scanText(frame) as any;
+
+        let idDetected = false;
 
         if (result?.blocks && result.blocks.length > 0) {
             // Get the frame bounds to filter text blocks
@@ -213,19 +263,26 @@ export default function VisionCropCamera() {
                 const nationalIdMatch = text.match(/\d{10}/);
                 const hasName = textLower.includes('name');
                 const hasHashemite = textLower.includes('hashemite');
+                
                 if (nationalIdMatch && hasName && hasHashemite) {
-                    runOnTextDetected();
+                    idDetected = true;
+                    runOnDetectionSuccess();
                 }
             }
         }
-    }, [scanText, runOnTextDetected]);
 
-    // Auto-capture when text is detected
+        // If ID not detected in this frame, check if we should reset
+        if (!idDetected) {
+            runOnDetectionMissed();
+        }
+    }, [scanText, runOnDetectionSuccess, runOnDetectionMissed]);
+
+    // Auto-capture when ready phase is reached
     useEffect(() => {
-        if (textDetected && !croppedImage && !isCapturing.current) {
+        if (detectionPhase === 'ready' && !croppedImage && !isCapturing.current) {
             takeAndCropPhoto();
         }
-    }, [textDetected, croppedImage, takeAndCropPhoto]);
+    }, [detectionPhase, croppedImage, takeAndCropPhoto]);
 
     // --- PERMISSION SCREEN ---
     if (!hasPermission) {
@@ -263,8 +320,9 @@ export default function VisionCropCamera() {
                         onPress={() => {
                             setCroppedImage(null);
                             setStatusMessage('Scanning for ID...');
-                            setTextDetected(false);
-                            detectionTriggered.current = false;
+                            setDetectionPhase('scanning');
+                            holdStartTime.current = null;
+                            lastDetectionTime.current = null;
                             // Re-enable camera after a brief delay to let it reinitialize
                             setTimeout(() => {
                                 setIsCameraActive(true);
@@ -314,9 +372,10 @@ export default function VisionCropCamera() {
                     {/* Status message */}
                     <View style={[
                         styles.statusContainer,
-                        textDetected && styles.statusContainerReady,
+                        detectionPhase === 'holding' && styles.statusContainerHolding,
+                        detectionPhase === 'ready' && styles.statusContainerReady,
                     ]}>
-                        {!textDetected && (
+                        {detectionPhase === 'scanning' && (
                             <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
                         )}
                         <Text style={styles.statusText}>{statusMessage}</Text>
@@ -328,14 +387,16 @@ export default function VisionCropCamera() {
             <TouchableOpacity
                 style={[
                     styles.captureBtn,
-                    textDetected && styles.captureBtnReady,
+                    detectionPhase === 'holding' && styles.captureBtnHolding,
+                    detectionPhase === 'ready' && styles.captureBtnReady,
                 ]}
                 onPress={takeAndCropPhoto}
                 disabled={isCapturing.current}
             >
                 <View style={[
                     styles.captureInner,
-                    textDetected && styles.captureInnerReady,
+                    detectionPhase === 'holding' && styles.captureInnerHolding,
+                    detectionPhase === 'ready' && styles.captureInnerReady,
                 ]} />
             </TouchableOpacity>
         </View>
@@ -406,6 +467,9 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
     },
+    statusContainerHolding: {
+        backgroundColor: 'rgba(255, 165, 0, 0.9)',
+    },
     statusContainerReady: {
         backgroundColor: 'rgba(0, 128, 0, 0.9)',
     },
@@ -426,6 +490,9 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         alignItems: 'center',
     },
+    captureBtnHolding: {
+        borderColor: '#FFA500',
+    },
     captureBtnReady: {
         borderColor: '#00FF00',
     },
@@ -434,6 +501,9 @@ const styles = StyleSheet.create({
         height: 60,
         borderRadius: 30,
         backgroundColor: 'white',
+    },
+    captureInnerHolding: {
+        backgroundColor: '#FFA500',
     },
     captureInnerReady: {
         backgroundColor: '#00FF00',
