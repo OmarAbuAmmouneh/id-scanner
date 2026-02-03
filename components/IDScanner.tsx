@@ -128,44 +128,12 @@ function detectMRZLines(text: string): string[] | null {
 }
 
 // ============================================================================
-// OCR UTILITY
+// OCR UTILITY (disabled - using vision-camera-text-recognition instead)
 // ============================================================================
 
-async function extractTextFromImage(imagePath: string): Promise<void> {
-  try {
-    const result = await TextRecognition.recognize(imagePath);
-    const ocrText = result.text;
-
-    console.log('=== OCR Results ===');
-    console.log('Raw text:', ocrText);
-
-    // Check for MRZ and parse if found
-    const mrzLines = detectMRZLines(ocrText);
-    if (mrzLines) {
-      try {
-        const mrzString = mrzLines.join('\n');
-        const parsed = parseMRZ(mrzString);
-        const fields = parsed.fields as Record<string, string | null>;
-        console.log('=== MRZ Detected ===');
-        console.log('Document Type:', fields.documentType);
-        console.log('Country:', fields.issuingState);
-        console.log('Last Name:', fields.lastName);
-        console.log('First Name:', fields.firstName);
-        console.log('Document Number:', fields.documentNumber);
-        console.log('Nationality:', fields.nationality);
-        console.log('Date of Birth:', fields.birthDate);
-        console.log('Sex:', fields.sex);
-        console.log('Expiration Date:', fields.expirationDate);
-        console.log('Valid:', parsed.valid);
-      } catch (mrzError) {
-        console.log('MRZ pattern found but parsing failed:', mrzError);
-      }
-    } else {
-      console.log('No MRZ detected in image');
-    }
-  } catch (error) {
-    console.error('OCR Error:', error);
-  }
+async function extractTextFromImage(_imagePath: string): Promise<void> {
+  // OCR is now handled by VisionCropCamera using frame processor
+  console.log('OCR extraction skipped - use VisionCropCamera for real-time OCR');
 }
 
 // ============================================================================

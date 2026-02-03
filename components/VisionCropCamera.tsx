@@ -1,6 +1,6 @@
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Dimensions, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Dimensions, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Camera, useCameraDevice, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
 import { useTextRecognition } from 'react-native-vision-camera-text-recognition';
 import { useRunOnJS } from 'react-native-worklets-core';
@@ -125,11 +125,27 @@ export default function VisionCropCamera() {
                 enableShutterSound: false,
             });
 
-            // Vision Camera reports raw dimensions (landscape) but expo-image-manipulator
-            // applies EXIF rotation BEFORE cropping. So we need to use post-EXIF dimensions.
-            const needsSwap = photo.orientation === 'landscape-left' || photo.orientation === 'landscape-right';
-            const imageWidth = needsSwap ? photo.height : photo.width;
-            const imageHeight = needsSwap ? photo.width : photo.height;
+            let imageWidth: number;
+            let imageHeight: number;
+
+            if (Platform.OS === 'ios') {
+                // iOS: Vision Camera reports raw dimensions (landscape) but expo-image-manipulator
+                // applies EXIF rotation BEFORE cropping. So we need to use post-EXIF dimensions.
+                const needsSwap = photo.orientation === 'landscape-left' || photo.orientation === 'landscape-right';
+                imageWidth = needsSwap ? photo.height : photo.width;
+                imageHeight = needsSwap ? photo.width : photo.height;
+            } else {
+                // Android: Use dimensions as reported - expo-image-manipulator handles rotation
+                // Photos are typically already in correct orientation or rotated by the library
+                imageWidth = photo.width;
+                imageHeight = photo.height;
+
+                // If photo is landscape but screen is portrait, swap
+                if (imageWidth > imageHeight && cameraLayout.height > cameraLayout.width) {
+                    imageWidth = photo.height;
+                    imageHeight = photo.width;
+                }
+            }
 
             const previewAspect = cameraLayout.width / cameraLayout.height;
             const photoAspect = imageWidth / imageHeight;
@@ -138,10 +154,12 @@ export default function VisionCropCamera() {
             let offsetX = 0, offsetY = 0;
 
             if (photoAspect > previewAspect) {
+                // Photo is wider than preview - crop sides
                 scaleY = imageHeight / cameraLayout.height;
                 scaleX = scaleY;
                 offsetX = (imageWidth - cameraLayout.width * scaleX) / 2;
             } else {
+                // Photo is taller than preview - crop top/bottom
                 scaleX = imageWidth / cameraLayout.width;
                 scaleY = scaleX;
                 offsetY = (imageHeight - cameraLayout.height * scaleY) / 2;

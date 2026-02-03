@@ -1,0 +1,26 @@
+diff --git a/node_modules/react-native-vision-camera-text-recognition/android/src/main/java/com/visioncameratextrecognition/VisionCameraTextRecognitionPlugin.kt b/node_modules/react-native-vision-camera-text-recognition/android/src/main/java/com/visioncameratextrecognition/VisionCameraTextRecognitionPlugin.kt
+index f48c947..68b97c2 100644
+--- a/node_modules/react-native-vision-camera-text-recognition/android/src/main/java/com/visioncameratextrecognition/VisionCameraTextRecognitionPlugin.kt
++++ b/node_modules/react-native-vision-camera-text-recognition/android/src/main/java/com/visioncameratextrecognition/VisionCameraTextRecognitionPlugin.kt
+@@ -42,6 +42,7 @@ class VisionCameraTextRecognitionPlugin(proxy: VisionCameraProxy, options: Map<S
+         }
+     }
+ 
++    @Suppress("UNCHECKED_CAST")
+     override fun callback(frame: Frame, arguments: Map<String, Any>?): HashMap<String, Any>? {
+         val data = WritableNativeMap()
+         val mediaImage: Image = frame.image
+@@ -51,11 +52,11 @@ class VisionCameraTextRecognitionPlugin(proxy: VisionCameraProxy, options: Map<S
+         try {
+             val text: Text = Tasks.await(task)
+             if (text.text.isEmpty()) {
+-                return WritableNativeMap().toHashMap()
++                return WritableNativeMap().toHashMap() as HashMap<String, Any>
+             }
+             data.putString("resultText", text.text)
+             data.putArray("blocks", getBlocks(text.textBlocks))
+-            return data.toHashMap()
++            return data.toHashMap() as HashMap<String, Any>
+         } catch (e: Exception) {
+             e.printStackTrace()
+             return null
