@@ -1,12 +1,14 @@
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Dimensions, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSharedValue } from 'react-native-reanimated';
 import { Camera, useCameraDevice, useCameraFormat, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
 import { useTextRecognition } from 'react-native-vision-camera-text-recognition';
 import { useRunOnJS } from 'react-native-worklets-core';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const IS_IOS = Platform.OS === 'ios';
+const IS_ANDROID = Platform.OS === 'android';
 
 // ID card aspect ratio is approximately 1.586:1 (85.6mm x 53.98mm)
 const FRAME_WIDTH = SCREEN_WIDTH - 40;
@@ -28,9 +30,24 @@ const DETECTION_GRACE_MS = 300;
 // Detection phases
 type DetectionPhase = 'scanning' | 'holding' | 'ready';
 
-// Helper to get the frame region bounds in frame coordinates (iOS only)
+// Helper to get the frame region bounds
 const getFrameBounds = (frameWidth: number, frameHeight: number) => {
     'worklet';
+    
+    // On Android, OCR coordinates appear to be in screen/view space already
+    // So we return bounds in screen space directly
+    if (IS_ANDROID) {
+        const horizontalPadding = FRAME_WIDTH * BOUNDS_PADDING;
+        const verticalPadding = FRAME_HEIGHT * BOUNDS_PADDING;
+        return {
+            left: FRAME_X - horizontalPadding,
+            top: FRAME_Y - verticalPadding,
+            right: FRAME_X + FRAME_WIDTH + horizontalPadding,
+            bottom: FRAME_Y + FRAME_HEIGHT + verticalPadding,
+        };
+    }
+    
+    // iOS: OCR coordinates are in frame space, need to scale
     const screenAspect = SCREEN_WIDTH / SCREEN_HEIGHT;
     const frameAspect = frameWidth / frameHeight;
 
@@ -245,15 +262,26 @@ export default function VisionCropCamera() {
     const runOnDetectionSuccess = useRunOnJS(onDetectionSuccess, [onDetectionSuccess]);
     const runOnDetectionMissed = useRunOnJS(onDetectionMissed, [onDetectionMissed]);
 
+    // Frame skip counter using shared value (works in worklets)
+    const frameCount = useSharedValue(0);
+
     // Frame processor for real-time OCR
     const frameProcessor = useFrameProcessor((frame) => {
         'worklet';
+
+        // Android: Skip frames to improve performance (process every 3rd frame)
+        if (IS_ANDROID) {
+            frameCount.value = (frameCount.value + 1) % 3;
+            if (frameCount.value !== 0) {
+                return;
+            }
+        }
 
         const result = scanText(frame) as any;
 
         let idDetected = false;
 
-        // Check resultText (Android) or blocks (iOS)
+        // Collect text from OCR results
         let fullText = '';
         if (result?.blocks && result.blocks.length > 0) {
             if (IS_IOS) {
@@ -270,7 +298,7 @@ export default function VisionCropCamera() {
                     }
                 }
             } else {
-                // Android: Use all block text (position filtering unreliable due to coordinate system mismatches)
+                // Android: Skip bounds filtering for now (debugging)
                 for (const block of result.blocks) {
                     if (block.blockText) {
                         fullText += block.blockText + ' ';
@@ -288,28 +316,20 @@ export default function VisionCropCamera() {
             // Check for patterns:
             // 1. 10-digit national ID
             // 2. "name" or common OCR misreads
-            // 3. "hashemite"/"jordan" (iOS only)
+            // 3. "hashemite"/"jordan"
             const nationalIdMatch = fullText.match(/\d{10}/);
             const hasName = textLower.includes('name') ||
                            textLower.includes('nae') ||
                            textLower.includes('nam:') ||
                            textLower.includes('nane') ||
                            textLower.includes('namet');
-            if (IS_IOS) {
-                // iOS: require hashemite/jordan check
-                const hasJordanId = textLower.includes('hashemite') ||
-                                   textLower.includes('jordan') ||
-                                   textLower.includes('kingdom');
-                if (nationalIdMatch && hasName && hasJordanId) {
-                    idDetected = true;
-                    runOnDetectionSuccess();
-                }
-            } else {
-                // Android: just name + national ID
-                if (nationalIdMatch && hasName) {
-                    idDetected = true;
-                    runOnDetectionSuccess();
-                }
+            const hasJordanId = textLower.includes('hashemite') ||
+                               textLower.includes('jordan') ||
+                               textLower.includes('kingdom');
+            
+            if (nationalIdMatch && hasName && hasJordanId) {
+                idDetected = true;
+                runOnDetectionSuccess();
             }
         }
 
