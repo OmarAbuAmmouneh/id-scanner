@@ -30,38 +30,30 @@ const DETECTION_GRACE_MS = 300;
 // Detection phases
 type DetectionPhase = 'scanning' | 'holding' | 'ready';
 
-// Helper to get the frame region bounds
+// Helper to get the frame region bounds in OCR coordinate space
 const getFrameBounds = (frameWidth: number, frameHeight: number) => {
     'worklet';
     
-    // On Android, OCR coordinates appear to be in screen/view space already
-    // So we return bounds in screen space directly
-    if (IS_ANDROID) {
-        const horizontalPadding = FRAME_WIDTH * BOUNDS_PADDING;
-        const verticalPadding = FRAME_HEIGHT * BOUNDS_PADDING;
-        return {
-            left: FRAME_X - horizontalPadding,
-            top: FRAME_Y - verticalPadding,
-            right: FRAME_X + FRAME_WIDTH + horizontalPadding,
-            bottom: FRAME_Y + FRAME_HEIGHT + verticalPadding,
-        };
-    }
+    // Android: ML Kit returns coordinates in rotated space (portrait)
+    // Raw frame is landscape (width > height) but OCR coords are portrait (swapped)
+    // So we use swapped dimensions: effectiveWidth = frameHeight, effectiveHeight = frameWidth
+    const effectiveWidth = IS_ANDROID ? frameHeight : frameWidth;
+    const effectiveHeight = IS_ANDROID ? frameWidth : frameHeight;
     
-    // iOS: OCR coordinates are in frame space, need to scale
     const screenAspect = SCREEN_WIDTH / SCREEN_HEIGHT;
-    const frameAspect = frameWidth / frameHeight;
+    const frameAspect = effectiveWidth / effectiveHeight;
 
     let scaleX: number, scaleY: number;
     let offsetX = 0, offsetY = 0;
 
     if (frameAspect > screenAspect) {
-        scaleY = frameHeight / SCREEN_HEIGHT;
+        scaleY = effectiveHeight / SCREEN_HEIGHT;
         scaleX = scaleY;
-        offsetX = (frameWidth - SCREEN_WIDTH * scaleX) / 2;
+        offsetX = (effectiveWidth - SCREEN_WIDTH * scaleX) / 2;
     } else {
-        scaleX = frameWidth / SCREEN_WIDTH;
+        scaleX = effectiveWidth / SCREEN_WIDTH;
         scaleY = scaleX;
-        offsetY = (frameHeight - SCREEN_HEIGHT * scaleY) / 2;
+        offsetY = (effectiveHeight - SCREEN_HEIGHT * scaleY) / 2;
     }
 
     const left = FRAME_X * scaleX + offsetX;
@@ -281,26 +273,22 @@ export default function VisionCropCamera() {
 
         let idDetected = false;
 
-        // Collect text from OCR results
+        // Collect text from OCR results - filter by bounds on both platforms
         let fullText = '';
         if (result?.blocks && result.blocks.length > 0) {
-            if (IS_IOS) {
-                // iOS: Filter blocks within frame bounds
-                const bounds = getFrameBounds(frame.width, frame.height);
-                for (const block of result.blocks) {
-                    const blockFrame = block.blockFrame;
-                    if (blockFrame && block.blockText) {
-                        const centerX = blockFrame.boundingCenterX || (blockFrame.x + blockFrame.width / 2);
-                        const centerY = blockFrame.boundingCenterY || (blockFrame.y + blockFrame.height / 2);
-                        if (isWithinFrame(centerX, centerY, bounds)) {
-                            fullText += block.blockText + ' ';
-                        }
-                    }
-                }
-            } else {
-                // Android: Skip bounds filtering for now (debugging)
-                for (const block of result.blocks) {
-                    if (block.blockText) {
+            // Get bounds in OCR coordinate space (handles Android's rotated coords)
+            const bounds = getFrameBounds(frame.width, frame.height);
+            
+            for (const block of result.blocks) {
+                const blockFrame = block.blockFrame;
+                if (blockFrame && block.blockText) {
+                    // Use bounding center coordinates (no transformation needed)
+                    // Android: ML Kit already returns coords in rotated/portrait space
+                    // iOS: Coords are in frame space
+                    const centerX = blockFrame.boundingCenterX || (blockFrame.x + blockFrame.width / 2);
+                    const centerY = blockFrame.boundingCenterY || (blockFrame.y + blockFrame.height / 2);
+                    
+                    if (isWithinFrame(centerX, centerY, bounds)) {
                         fullText += block.blockText + ' ';
                     }
                 }
