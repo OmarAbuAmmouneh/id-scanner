@@ -28,7 +28,7 @@ const DETECTION_GRACE_MS = 300;
 // Detection phases
 type DetectionPhase = 'scanning' | 'holding' | 'ready';
 
-// Helper to get the frame region bounds in frame coordinates
+// Helper to get the frame region bounds in frame coordinates (iOS only)
 const getFrameBounds = (frameWidth: number, frameHeight: number) => {
     'worklet';
     const screenAspect = SCREEN_WIDTH / SCREEN_HEIGHT;
@@ -47,17 +47,14 @@ const getFrameBounds = (frameWidth: number, frameHeight: number) => {
         offsetY = (frameHeight - SCREEN_HEIGHT * scaleY) / 2;
     }
 
-    // Calculate base bounds
     const left = FRAME_X * scaleX + offsetX;
     const top = FRAME_Y * scaleY + offsetY;
     const right = (FRAME_X + FRAME_WIDTH) * scaleX + offsetX;
     const bottom = (FRAME_Y + FRAME_HEIGHT) * scaleY + offsetY;
 
-    // Calculate padding amounts
     const horizontalPadding = (right - left) * BOUNDS_PADDING;
     const verticalPadding = (bottom - top) * BOUNDS_PADDING;
 
-    // Return expanded bounds
     return {
         left: left - horizontalPadding,
         top: top - verticalPadding,
@@ -258,17 +255,31 @@ export default function VisionCropCamera() {
 
         // Check resultText (Android) or blocks (iOS)
         let fullText = '';
-
-        if (result?.resultText) {
-            // Android format
-            fullText = result.resultText;
-        } else if (result?.blocks && result.blocks.length > 0) {
-            // iOS format - collect all block text
-            for (const block of result.blocks) {
-                if (block.blockText) {
-                    fullText += block.blockText + ' ';
+        if (result?.blocks && result.blocks.length > 0) {
+            if (IS_IOS) {
+                // iOS: Filter blocks within frame bounds
+                const bounds = getFrameBounds(frame.width, frame.height);
+                for (const block of result.blocks) {
+                    const blockFrame = block.blockFrame;
+                    if (blockFrame && block.blockText) {
+                        const centerX = blockFrame.boundingCenterX || (blockFrame.x + blockFrame.width / 2);
+                        const centerY = blockFrame.boundingCenterY || (blockFrame.y + blockFrame.height / 2);
+                        if (isWithinFrame(centerX, centerY, bounds)) {
+                            fullText += block.blockText + ' ';
+                        }
+                    }
+                }
+            } else {
+                // Android: Use all block text (position filtering unreliable due to coordinate system mismatches)
+                for (const block of result.blocks) {
+                    if (block.blockText) {
+                        fullText += block.blockText + ' ';
+                    }
                 }
             }
+        } else if (result?.resultText) {
+            // Fallback for resultText (no position filtering available)
+            fullText = result.resultText;
         }
 
         if (fullText.length > 0) {
